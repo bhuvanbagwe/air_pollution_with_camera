@@ -1,0 +1,81 @@
+import sensor
+import image
+import lcd
+import time
+import gc
+
+lcd.init()
+sensor.reset()
+sensor.set_pixformat(sensor.RGB565)
+sensor.set_framesize(sensor.QVGA)
+sensor.skip_frames(time=2000)
+
+min_blob_size = 1
+max_blob_size = 1000
+frame_count = 0
+previous_frame = sensor.snapshot()
+
+chamber_volume = 5  # cm^3
+fan_speed = 600  # rpm
+
+while True:
+    gc.collect()
+
+    current_frame = sensor.snapshot()
+    difference = current_frame.difference(previous_frame)
+    previous_frame = current_frame.copy()
+
+    blobs = difference.find_blobs([(0, 100, 0, 0, 0, 0, 0, 0)], pixels_threshold=1, area_threshold=1)
+
+    total_contour_size = 0
+    total_intensity = 0
+    valid_blob_count = 0
+
+    for b in blobs:
+        blob_area = b.w() * b.h()
+
+        if min_blob_size <= blob_area <= max_blob_size:
+            difference.draw_rectangle(b[0:4])
+            difference.draw_cross(b[5], b[6])
+
+            pixel_values = difference.copy().crop(b[0:4]).get_statistics()
+            mean_intensity = (pixel_values.l_mean() + pixel_values.a_mean() + pixel_values.b_mean()) / 3
+
+            total_contour_size += blob_area
+            total_intensity += mean_intensity
+            valid_blob_count += 1
+
+    if valid_blob_count > 0:
+        avg_contour_size = total_contour_size / valid_blob_count
+        avg_intensity = total_intensity / valid_blob_count
+    else:
+        avg_contour_size = 0
+        avg_intensity = 0
+
+    derived_input = (avg_contour_size * avg_intensity * chamber_volume) / fan_speed
+    model_output = regression_model.predict(derived_input)
+
+    pm_1 = calculate_pm(model_output, 1)
+    pm_2_5 = calculate_pm(model_output, 2.5)
+    pm_10 = calculate_pm(model_output, 10)
+
+    lcd.display(difference)
+    print("Frame: {}, Avg Contour Size: {}, Avg Intensity: {}, PM1: {}, PM2.5: {}, PM10: {}".format(
+        frame_count, avg_contour_size, avg_intensity, pm_1, pm_2_5, pm_10))
+
+    frame_count += 1
+
+    if frame_count % 5 == 0:
+        del current_frame
+        del difference
+        del blobs
+        gc.collect()
+        previous_frame = sensor.snapshot()
+
+def calculate_pm(model_output, pm_size):
+
+    scaling_factor = 0.85
+    particle_density = 1.2
+
+    pm_value = scaling_factor * (model_output ** (1 + (0.5 * pm_size))) / (particle_density * pm_size)
+    return pm_value
